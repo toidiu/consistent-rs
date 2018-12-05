@@ -1,0 +1,10 @@
+[package]
+name = "consistent-rs"
+version = "0.1.0"
+authors = ["toidiu <apoorv@toidiu.com>"]
+
+[dependencies]
+failure = "^0.1"
+# blake2 = "^0.8"
+serde = "^1.0"
+serde_derive = "^1.0"
