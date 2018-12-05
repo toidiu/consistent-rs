@@ -1,13 +1,32 @@
+#[macro_use]
+extern crate failure;
+#[macro_use]
+extern crate serde_derive;
+
+use std::collections::HashMap;
+
+#[derive(Debug, Fail)]
+enum ConsistentError {
+    #[fail(display = "invalid toolchain name: {}", name)]
+    InvalidToolchainName { name: String },
+    #[fail(display = "unknown toolchain version: {}", version)]
+    UnknownToolchainVersion { version: String },
+}
+
 fn main() {
     let c = MyC::new();
 }
 
 struct MyC {
-    capacity: u32,
+    nodes: HashMap<u32, String>,
+    count: u32,
 }
 
 impl Consistent for MyC {
     fn new() -> Self {
+        unimplemented!()
+    }
+    fn new_with_nodes(nodes: Vec<String>) -> Self {
         unimplemented!()
     }
     fn add() {
@@ -24,6 +43,7 @@ impl Consistent for MyC {
 trait Consistent {
     //=== regular consistent hash: https://github.com/stathat/consistent
     fn new() -> Self;
+    fn new_with_nodes(nodes: Vec<String>) -> Self;
     fn add();
     fn get() -> String;
     fn remove();
