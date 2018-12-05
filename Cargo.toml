@@ -1,0 +1,6 @@
+[package]
+name = "consistent-rs"
+version = "0.1.0"
+authors = ["toidiu <apoorv@toidiu.com>"]
+
+[dependencies]
