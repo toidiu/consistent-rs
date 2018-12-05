@@ -26,9 +26,6 @@ impl Consistent for MyC {
     fn new() -> Self {
         unimplemented!()
     }
-    fn new_with_nodes(nodes: Vec<String>) -> Self {
-        unimplemented!()
-    }
     fn add() {
         unimplemented!()
     }
@@ -43,7 +40,6 @@ impl Consistent for MyC {
 trait Consistent {
     //=== regular consistent hash: https://github.com/stathat/consistent
     fn new() -> Self;
-    fn new_with_nodes(nodes: Vec<String>) -> Self;
     fn add();
     fn get() -> String;
     fn remove();
