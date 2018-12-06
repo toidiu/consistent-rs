@@ -21,13 +21,16 @@ fn main() {
 }
 
 type Hashable = Vec<u8>;
+type Hash = u32;
 
 struct MyCHash<N>
 where
     Hashable: From<N>,
     N: Clone,
 {
-    nodes: HashMap<u32, N>,
+    /// map of Hash -> Node
+    nodes: HashMap<Hash, N>,
+    /// count of unique Nodes
     count: u32,
 }
 
@@ -36,12 +39,29 @@ where
     Hashable: From<N>,
     N: Clone,
 {
-    fn get_hash(&self, string: &N, replica_num: u32) -> u32 {
+    fn calc_hash(&self, string: &[u8]) -> Hash {
         unimplemented!()
     }
 
-    fn get_virtual_nodes() {
-        unimplemented!()
+    fn add_virtual_nodes(&mut self, node: N) {
+        let v: Vec<u8> = node.clone().into();
+
+        for v_node_num in 0..Self::REPLICAS {
+            let mut v_clone = v.clone();
+
+            // transform virtual node num to [u8]
+            let b1: u8 = ((v_node_num >> 24) & 0xff) as u8;
+            let b2: u8 = ((v_node_num >> 16) & 0xff) as u8;
+            let b3: u8 = ((v_node_num >> 8) & 0xff) as u8;
+            let b4: u8 = (v_node_num & 0xff) as u8;
+            let mut bytes = [b1, b2, b3, b4].to_vec();
+
+            // create a unique Vec<u8> per virtual node
+            v_clone.append(&mut bytes);
+
+            let hash = self.calc_hash(&v_clone);
+            self.nodes.insert(hash, node.clone());
+        }
     }
 }
 
@@ -57,10 +77,7 @@ where
     }
     fn add(&mut self, node: Self::NodeType) {
         self.count += 1;
-        for i in 0..Self::REPLICAS {
-            let hash = self.get_hash(&node, i);
-            self.nodes.insert(hash, node.clone());
-        }
+        self.add_virtual_nodes(node);
     }
     fn remove() {
         unimplemented!()
