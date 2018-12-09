@@ -3,11 +3,11 @@ extern crate failure;
 #[macro_use]
 extern crate serde_derive;
 
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::collections::BTreeMap;
 
-use blake2::digest::{Input, VariableOutput};
-use blake2::{Blake2b, VarBlake2b};
+use blake2::digest::FixedOutput;
+use blake2::Blake2s;
+use blake2::Digest;
 
 #[derive(Debug, Fail)]
 enum ConsistentError {
@@ -20,19 +20,30 @@ enum ConsistentError {
 type AppResult<T> = Result<ConsistentError, T>;
 
 fn main() {
-    let c = MyCHash::<String>::new();
+    let _c = MyCHash::<String>::new();
 }
 
 type Hashable = Vec<u8>;
-type Hash = u32;
+type Hash = u64;
 
 struct MyCHash<N>
 where
     Hashable: From<N>,
     N: Clone,
 {
-    /// map of Hash -> Node
-    nodes: HashMap<Hash, N>,
+    /// This is used to retrieve the closest server to a hashed item.
+    /// The properties we would want from this structure are:
+    /// - fast search: find entry with the closest hash to item
+    /// - fast insert: add an entry
+    /// - fast removes: remove an entry based on a virtual hash
+    /// - fast lookup: get the server value based on its virtual hash
+    ///
+    /// Based on these criterias the ideal structure seems to be
+    /// `BTreeHash<Hash, N>`. The structure automatically maintains
+    /// the entries in sorted order, which gives us O(n*log(n)) for searches.
+    /// It also supports O(n*log(n)) inserts, removes, and lookups.
+    nodes: BTreeMap<Hash, N>,
+
     /// count of unique Nodes
     count: u32,
 }
@@ -50,37 +61,34 @@ where
         [b1, b2, b3, b4]
     }
 
-    pub fn as_u32_be(array: &[u8; 4]) -> u32 {
-        ((array[0] as u32) << 24)
-            + ((array[1] as u32) << 16)
-            + ((array[2] as u32) << 8)
-            + ((array[3] as u32) << 0)
-    }
-
     fn internal_calc_hash(data: &[u8]) -> Hash {
-        let mut hasher = VarBlake2b::new(4).unwrap();
+        let mut hasher = Blake2s::new();
         hasher.input(data);
-        let res = hasher.vec_result();
-        println!("{:?}", &res);
-        assert_eq!(res.len(), 4);
-        let v: [u8; 4] = unsafe {
-            [
-                res.get_unchecked(0).clone(),
-                res.get_unchecked(1).clone(),
-                res.get_unchecked(2).clone(),
-                res.get_unchecked(3).clone(),
-            ]
-        };
+        let res = hasher.fixed_result();
+        assert!(res.len() == 32);
 
-        Self::as_u32_be(&v)
+        ((res[0] as u64) << 56)
+            + ((res[1] as u64) << 48)
+            + ((res[2] as u64) << 40)
+            + ((res[3] as u64) << 32)
+            + ((res[4] as u64) << 24)
+            + ((res[5] as u64) << 16)
+            + ((res[6] as u64) << 8)
+            + ((res[7] as u64) << 0)
     }
 
-    fn calc_v_hash(v: &mut Vec<u8>, v_idx: u32) -> u32 {
-        // transform v_idx to [u8]
-        let mut bytes = Self::as_slice_u8_be(v_idx).to_vec();
+    fn calc_v_hash(v: &Vec<u8>, v_idx: u32) -> Hash {
+        // spread the virtual index
+        let idx_bytes = Self::as_slice_u8_be(v_idx * Self::MUL).to_vec();
+
+        // modify res
+        let mut res = Vec::new();
+        res.append(&mut idx_bytes.clone());
+        res.append(&mut v.clone());
+        res.append(&mut idx_bytes.clone());
+
         // create a unique Vec<u8> per virtual index
-        v.append(&mut bytes);
-        Self::internal_calc_hash(&v)
+        Self::internal_calc_hash(&res)
     }
 
     fn add_virtual_nodes(&mut self, node: N) {
@@ -88,10 +96,7 @@ where
 
         for v_idx in 0..Self::REPLICAS {
             // add v_idx to the node to create a unique key
-            let mut v_clone = v.clone();
-
-            let hash = Self::calc_v_hash(&mut v_clone, v_idx);
-            println!("{}", hash);
+            let hash = Self::calc_v_hash(&v, v_idx);
             self.nodes.insert(hash, node.clone());
         }
     }
@@ -101,12 +106,40 @@ where
 
         for v_idx in 0..Self::REPLICAS {
             // add v_idx to the node to create a unique key
-            let mut v_clone = v.clone();
-
-            let hash = Self::calc_v_hash(&mut v_clone, v_idx);
-            println!("{}", hash);
+            let hash = Self::calc_v_hash(&v, v_idx);
             self.nodes.remove(&hash);
         }
+    }
+
+    fn get_virtual_node(&self, item: &N) -> N {
+        // item hash
+        let v: Vec<u8> = item.clone().into();
+        let i_hash = Self::internal_calc_hash(&v);
+
+        // get num of entries
+        let num_entries = self.nodes.len();
+
+        // get vec of tuple of key and value and then do a binary search
+        let sorted_vec: Vec<(&Hash, &N)> = self.nodes.iter().collect();
+        let cmp_res: Result<usize, usize> = sorted_vec.binary_search_by(|i| (i.0).cmp(&i_hash));
+
+        // get the index at which the item lands
+        let item_idx: usize = match cmp_res {
+            Ok(idx) => idx,
+            Err(idx) => {
+                if idx >= num_entries {
+                    0
+                } else {
+                    idx
+                }
+            }
+        };
+
+        let res: &(&Hash, &N) = sorted_vec
+            .get(item_idx)
+            .expect("expected idx to be present in sorted_nodes");
+
+        res.clone().1.clone()
     }
 }
 
@@ -115,46 +148,54 @@ where
     Hashable: From<N>,
     N: Clone,
 {
-    type NodeType = N;
+    type HashableItem = N;
 
+    /// create a new Consistent Hash instance
     fn new() -> Self {
         MyCHash {
-            nodes: HashMap::new(),
+            nodes: BTreeMap::new(),
             count: 0,
         }
     }
-    fn add(&mut self, node: Self::NodeType) {
-        let mut v: Vec<u8> = node.clone().into();
-        let contains_hash = Self::calc_v_hash(&mut v, 0);
 
-        if (!self.nodes.contains_key(&contains_hash)) {
+    /// add servers from list
+    fn add(&mut self, node: Self::HashableItem) {
+        let v: Vec<u8> = node.clone().into();
+        let contains_hash = Self::calc_v_hash(&v, 0);
+
+        if !self.nodes.contains_key(&contains_hash) {
             self.count += 1;
             self.add_virtual_nodes(node);
         }
     }
-    fn remove(&mut self, node: &Self::NodeType) {
-        let mut v: Vec<u8> = node.clone().into();
-        let contains_hash = Self::calc_v_hash(&mut v, 0);
 
-        if (self.nodes.contains_key(&contains_hash)) {
+    /// remove servers from list
+    fn remove(&mut self, node: &Self::HashableItem) {
+        let v: Vec<u8> = node.clone().into();
+        let contains_hash = Self::calc_v_hash(&v, 0);
+
+        if self.nodes.contains_key(&contains_hash) {
             self.count -= 1;
             self.remove_virtual_nodes(node);
         }
     }
-    fn get() -> Self::NodeType {
-        unimplemented!()
+
+    /// for a given `item` return a server which will handle its request
+    fn get(&self, item: &Self::HashableItem) -> Self::HashableItem {
+        self.get_virtual_node(item)
     }
 }
 
 trait Consistent<'a> {
-    type NodeType;
+    type HashableItem;
 
-    const REPLICAS: u32 = 10;
+    const REPLICAS: u32 = 11;
+    const MUL: u32 = 7;
     //=== regular consistent hash: https://github.com/stathat/consistent
     fn new() -> Self;
-    fn add(&mut self, node: Self::NodeType);
-    fn remove(&mut self, node: &Self::NodeType);
-    fn get() -> Self::NodeType;
+    fn add(&mut self, node: Self::HashableItem);
+    fn remove(&mut self, node: &Self::HashableItem);
+    fn get(&self, item: &Self::HashableItem) -> Self::HashableItem;
     // func (c *Consistent) GetN(name string, n int) ([]string, error)
     // func (c *Consistent) GetTwo(name string) (string, string, error)
     // func (c *Consistent) Members() []string
@@ -179,27 +220,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_add() {
-        let mut c = MyCHash::<String>::new();
+    fn add() {
+        let mut c = MyCHash::<&str>::new();
         assert_eq!(c.count, 0);
-        c.add("a".to_string());
+        c.add("a");
         assert_eq!(c.count, 1);
-        c.add("b".to_string());
+        c.add("b");
         assert_eq!(c.count, 2);
     }
 
     #[test]
-    fn test_remove() {
-        let mut c = MyCHash::<String>::new();
+    fn remove() {
+        let mut c = MyCHash::<&str>::new();
         assert_eq!(c.count, 0);
-        c.add("a".to_string());
+        c.add("a");
         assert_eq!(c.count, 1);
-        c.add("b".to_string());
+        c.add("b");
         assert_eq!(c.count, 2);
-        c.remove(&"a".to_string());
+        c.remove(&"a");
         assert_eq!(c.count, 1);
-        c.remove(&"b".to_string());
+        c.remove(&"b");
         assert_eq!(c.count, 0);
+    }
+
+    #[test]
+    fn only_move_keys_that_were_removed() {
+        let mut ch = MyCHash::<&str>::new();
+        ch.add("server1");
+        ch.add("server2");
+        ch.add("server3");
+        ch.add("server4");
+        ch.add("server5");
+        ch.add("server6");
+
+        println!("{:?}", ch.get(&"item1"));
+        println!("{:?}", ch.get(&"item2"));
+        println!("{:?}", ch.get(&"item3"));
+        println!("{:?}", ch.get(&"item4"));
+        println!("{:?}", ch.get(&"item5"));
+        println!("{:?}", ch.get(&"item6"));
+        println!("{:#?}", ch.nodes);
+
+        let oneh = ch.get(&"item1");
+        let twoh = ch.get(&"item2");
+
+        ch.remove(&oneh);
+        assert_ne!(ch.get(&"item1"), oneh);
+        assert_eq!(ch.get(&"item2"), twoh);
     }
 
 }
