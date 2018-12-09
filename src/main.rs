@@ -8,7 +8,6 @@ use std::str::FromStr;
 
 use blake2::digest::{Input, VariableOutput};
 use blake2::{Blake2b, VarBlake2b};
-// use blake2::{Blake2b, Digest};
 
 #[derive(Debug, Fail)]
 enum ConsistentError {
