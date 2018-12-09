@@ -9,5 +9,8 @@ matrix:
   allow_failures:
     - rust: nightly
 
+script:
+  - cargo test --verbose --all
+
 notifications:
 email: false
