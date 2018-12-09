@@ -6,6 +6,9 @@ extern crate serde_derive;
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use blake2::digest::{Input, VariableOutput};
+use blake2::{Blake2b, VarBlake2b};
+
 #[derive(Debug, Fail)]
 enum ConsistentError {
     #[fail(display = "invalid toolchain name: {}", name)]
@@ -39,28 +42,70 @@ where
     Hashable: From<N>,
     N: Clone,
 {
-    fn calc_hash(&self, string: &[u8]) -> Hash {
-        unimplemented!()
+    pub fn as_slice_u8_be(num: u32) -> [u8; 4] {
+        let b1: u8 = ((num >> 24) & 0xff) as u8;
+        let b2: u8 = ((num >> 16) & 0xff) as u8;
+        let b3: u8 = ((num >> 8) & 0xff) as u8;
+        let b4: u8 = (num & 0xff) as u8;
+        [b1, b2, b3, b4]
+    }
+
+    pub fn as_u32_be(array: &[u8; 4]) -> u32 {
+        ((array[0] as u32) << 24)
+            + ((array[1] as u32) << 16)
+            + ((array[2] as u32) << 8)
+            + ((array[3] as u32) << 0)
+    }
+
+    fn internal_calc_hash(data: &[u8]) -> Hash {
+        let mut hasher = VarBlake2b::new(4).unwrap();
+        hasher.input(data);
+        let res = hasher.vec_result();
+        println!("{:?}", &res);
+        assert_eq!(res.len(), 4);
+        let v: [u8; 4] = unsafe {
+            [
+                res.get_unchecked(0).clone(),
+                res.get_unchecked(1).clone(),
+                res.get_unchecked(2).clone(),
+                res.get_unchecked(3).clone(),
+            ]
+        };
+
+        Self::as_u32_be(&v)
+    }
+
+    fn calc_v_hash(v: &mut Vec<u8>, v_idx: u32) -> u32 {
+        // transform v_idx to [u8]
+        let mut bytes = Self::as_slice_u8_be(v_idx).to_vec();
+        // create a unique Vec<u8> per virtual index
+        v.append(&mut bytes);
+        Self::internal_calc_hash(&v)
     }
 
     fn add_virtual_nodes(&mut self, node: N) {
         let v: Vec<u8> = node.clone().into();
 
-        for v_node_num in 0..Self::REPLICAS {
+        for v_idx in 0..Self::REPLICAS {
+            // add v_idx to the node to create a unique key
             let mut v_clone = v.clone();
 
-            // transform virtual node num to [u8]
-            let b1: u8 = ((v_node_num >> 24) & 0xff) as u8;
-            let b2: u8 = ((v_node_num >> 16) & 0xff) as u8;
-            let b3: u8 = ((v_node_num >> 8) & 0xff) as u8;
-            let b4: u8 = (v_node_num & 0xff) as u8;
-            let mut bytes = [b1, b2, b3, b4].to_vec();
-
-            // create a unique Vec<u8> per virtual node
-            v_clone.append(&mut bytes);
-
-            let hash = self.calc_hash(&v_clone);
+            let hash = Self::calc_v_hash(&mut v_clone, v_idx);
+            println!("{}", hash);
             self.nodes.insert(hash, node.clone());
+        }
+    }
+
+    fn remove_virtual_nodes(&mut self, node: &N) {
+        let v: Vec<u8> = node.clone().into();
+
+        for v_idx in 0..Self::REPLICAS {
+            // add v_idx to the node to create a unique key
+            let mut v_clone = v.clone();
+
+            let hash = Self::calc_v_hash(&mut v_clone, v_idx);
+            println!("{}", hash);
+            self.nodes.remove(&hash);
         }
     }
 }
@@ -73,14 +118,28 @@ where
     type NodeType = N;
 
     fn new() -> Self {
-        unimplemented!()
+        MyCHash {
+            nodes: HashMap::new(),
+            count: 0,
+        }
     }
     fn add(&mut self, node: Self::NodeType) {
-        self.count += 1;
-        self.add_virtual_nodes(node);
+        let mut v: Vec<u8> = node.clone().into();
+        let contains_hash = Self::calc_v_hash(&mut v, 0);
+
+        if (!self.nodes.contains_key(&contains_hash)) {
+            self.count += 1;
+            self.add_virtual_nodes(node);
+        }
     }
-    fn remove() {
-        unimplemented!()
+    fn remove(&mut self, node: &Self::NodeType) {
+        let mut v: Vec<u8> = node.clone().into();
+        let contains_hash = Self::calc_v_hash(&mut v, 0);
+
+        if (self.nodes.contains_key(&contains_hash)) {
+            self.count -= 1;
+            self.remove_virtual_nodes(node);
+        }
     }
     fn get() -> Self::NodeType {
         unimplemented!()
@@ -94,7 +153,7 @@ trait Consistent<'a> {
     //=== regular consistent hash: https://github.com/stathat/consistent
     fn new() -> Self;
     fn add(&mut self, node: Self::NodeType);
-    fn remove();
+    fn remove(&mut self, node: &Self::NodeType);
     fn get() -> Self::NodeType;
     // func (c *Consistent) GetN(name string, n int) ([]string, error)
     // func (c *Consistent) GetTwo(name string) (string, string, error)
@@ -113,4 +172,34 @@ trait Consistent<'a> {
     // func (c *Consistent) MaxLoad() int64
     // func (c *Consistent) Remove(host string) bool
     // func (c *Consistent) UpdateLoad(host string, load int64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add() {
+        let mut c = MyCHash::<String>::new();
+        assert_eq!(c.count, 0);
+        c.add("a".to_string());
+        assert_eq!(c.count, 1);
+        c.add("b".to_string());
+        assert_eq!(c.count, 2);
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut c = MyCHash::<String>::new();
+        assert_eq!(c.count, 0);
+        c.add("a".to_string());
+        assert_eq!(c.count, 1);
+        c.add("b".to_string());
+        assert_eq!(c.count, 2);
+        c.remove(&"a".to_string());
+        assert_eq!(c.count, 1);
+        c.remove(&"b".to_string());
+        assert_eq!(c.count, 0);
+    }
+
 }
