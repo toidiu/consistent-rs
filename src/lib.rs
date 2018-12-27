@@ -54,12 +54,10 @@ where
         }
     }
 
-    fn as_slice_u8_be(num: u32) -> [u8; 4] {
-        let b1: u8 = ((num >> 24) & 0xff) as u8;
-        let b2: u8 = ((num >> 16) & 0xff) as u8;
-        let b3: u8 = ((num >> 8) & 0xff) as u8;
-        let b4: u8 = (num & 0xff) as u8;
-        [b1, b2, b3, b4]
+    #[inline]
+    fn u32_to_bytes_be(u: u32) -> [u8; 4] {
+        let a: [u8; 4] = unsafe { std::mem::transmute(u32::to_be(u)) };
+        a
     }
 
     fn internal_calc_hash(data: &[u8]) -> Hash {
@@ -81,7 +79,7 @@ where
 
     fn calc_v_hash(v: &[u8], v_idx: &u32) -> Hash {
         // spread the virtual index
-        let idx_bytes: &[u8] = &Self::as_slice_u8_be(v_idx * Self::MUL)[..];
+        let idx_bytes: &[u8] = &Self::u32_to_bytes_be(v_idx * Self::MUL)[..];
 
         // create virtual nodes
         let ad: &[u8] = &[idx_bytes, v, idx_bytes].concat();
